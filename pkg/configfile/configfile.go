@@ -7,6 +7,43 @@ import (
 	"github.com/BurntSushi/toml"
 	opengeminiv1 "github.com/openGemini/openGemini-operator/api/v1"
 	"github.com/openGemini/openGemini-operator/pkg/naming"
+	"golang.org/x/exp/maps"
+)
+
+var (
+	reserveConfigKeys = map[string]map[string]struct{}{
+		"common": {
+			"meta-join": {},
+			"ha-enable": {},
+		},
+		"meta": {
+			"bind-address":      {},
+			"http-bind-address": {},
+			"rpc-bind-address":  {},
+			"dir":               {},
+			"domain":            {},
+		},
+		"http": {
+			"bind-address": {},
+		},
+		"data": {
+			"store-ingest-addr": {},
+			"store-select-addr": {},
+			"store-data-dir":    {},
+			"store-wal-dir":     {},
+			"store-meta-dir":    {},
+		},
+		"logging": {
+			"path": {},
+		},
+		"gossip": {
+			"enabled":         {},
+			"bind-address":    {},
+			"store-bind-port": {},
+			"meta-bind-port":  {},
+			"members":         {},
+		},
+	}
 )
 
 type Config struct {
@@ -76,18 +113,18 @@ func NewBaseConfiguration(cluster *opengeminiv1.GeminiCluster) (string, error) {
 			BindAddress:     "<HOST_IP>:8088",
 			HttpBindAddress: "<HOST_IP>:8091",
 			RpcBindAddress:  "<HOST_IP>:8092",
-			Dir:             "/ogdata/meta",
+			Dir:             naming.DataMountPath + "/meta",
 			Domain:          "<META_DOMAIN>",
 		},
 		Data: DataConfig{
 			StoreIngestAddr: "<HOST_IP>:8400",
 			StoreSelectAddr: "<HOST_IP>:8401",
-			StoreDataDir:    "/ogdata/data",
-			StoreWalDir:     "/ogdata/wal",
-			StoreMetaDir:    "/ogdata/meta",
+			StoreDataDir:    naming.DataMountPath + "/data",
+			StoreWalDir:     naming.DataMountPath + "/wal",
+			StoreMetaDir:    naming.DataMountPath + "/meta",
 		},
 		Logging: LoggingConfig{
-			Path: "/ogdata/logs",
+			Path: naming.DataMountPath + "/logs",
 		},
 		Gossip: GossipConfig{
 			Enabled:       true,
@@ -106,6 +143,31 @@ func NewBaseConfiguration(cluster *opengeminiv1.GeminiCluster) (string, error) {
 	return buf.String(), nil
 }
 
+func UpdateConfig(running, new string) (bool, string) {
+	var runningToml map[string]interface{}
+	var newToml map[string]interface{}
+
+	_, err := toml.Decode(running, &runningToml)
+	if err != nil {
+		return false, running
+	}
+
+	_, err = toml.Decode(new, &newToml)
+	if err != nil {
+		return false, running
+	}
+
+	maps.Copy(newToml, runningToml)
+
+	var buf bytes.Buffer
+	err = toml.NewEncoder(&buf).Encode(newToml)
+	if err != nil {
+		return false, running
+	}
+	return buf.String() != running, buf.String()
+}
+
+// TODO: delete these codes below
 func Merge(data ...string) (string, error) {
 	output := make(map[string]interface{})
 	for _, dt := range data {

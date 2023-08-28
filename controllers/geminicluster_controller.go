@@ -50,6 +50,8 @@ type GeminiClusterReconciler struct {
 	client.Client
 	Owner  client.FieldOwner
 	Scheme *runtime.Scheme
+
+	runningConfig string
 }
 
 //+kubebuilder:rbac:groups=opengemini-operator.opengemini.org,resources=geminiclusters,verbs=get;list;watch;create;update;patch;delete
@@ -216,41 +218,33 @@ func (r *GeminiClusterReconciler) reconcileClusterConfigMap(
 	ctx context.Context,
 	cluster *opengeminiv1.GeminiCluster,
 ) error {
-	confData, err := configfile.NewBaseConfiguration(cluster)
-	if err != nil {
-		return fmt.Errorf("cannot generate cluster configruation: %w", err)
+	var err error
+
+	if r.runningConfig == "" {
+		r.runningConfig, err = configfile.NewBaseConfiguration(cluster)
+		if err != nil {
+			return fmt.Errorf("cannot generate cluster configruation: %w", err)
+		}
 	}
 
+	var isConfigChanged = true
 	if cluster.Spec.CustomConfigMapName != "" {
-		var customCM corev1.ConfigMap
-		err := r.Get(
-			ctx,
-			client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Spec.CustomConfigMapName},
-			&customCM)
+		isConfigChanged, err = r.updateConfig(ctx, cluster)
 		if err != nil {
-			return fmt.Errorf("fetch custom conf ConfigMap failed, err: %w", err)
+			return err
 		}
+	}
 
-		confFiles := make([]string, 0)
-		for _, v := range customCM.Data {
-			if v != "" {
-				confFiles = append(confFiles, v)
-			}
-		}
-		confFiles = append(confFiles, confData)
-
-		confData, err = configfile.Merge(confFiles...)
-		if err != nil {
-			return fmt.Errorf("merge custom conf failed, err: %w", err)
-		}
+	if !isConfigChanged {
+		return nil
 	}
 
 	clusterConfigMap := &corev1.ConfigMap{ObjectMeta: naming.ClusterConfigMap(cluster)}
 	clusterConfigMap.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ConfigMap"))
 	clusterConfigMap.Data = map[string]string{
-		naming.ConfigurationFile: confData,
+		naming.ConfigurationFile: r.runningConfig,
 	}
-	confHash := utils.CalcMd5Hash(confData)
+	confHash := utils.CalcMd5Hash(r.runningConfig)
 
 	cluster.SetInheritedMetadata(&clusterConfigMap.ObjectMeta)
 	if err := r.setControllerReference(cluster, clusterConfigMap); err != nil {
@@ -263,6 +257,28 @@ func (r *GeminiClusterReconciler) reconcileClusterConfigMap(
 	cluster.Status.AppliedConfigHash = confHash
 
 	return nil
+}
+func (r *GeminiClusterReconciler) updateConfig(ctx context.Context, cluster *opengeminiv1.GeminiCluster) (bool, error) {
+	var customCM corev1.ConfigMap
+	err := r.Get(
+		ctx,
+		client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Spec.CustomConfigMapName},
+		&customCM)
+	if err != nil {
+		return false, fmt.Errorf("fetch custom conf ConfigMap failed, err: %w", err)
+	}
+
+	var newConfigData string
+	var ok bool
+	if newConfigData, ok = customCM.Data[naming.ConfigurationFile]; !ok {
+		return false, nil
+	}
+
+	isUpdated, confData := configfile.UpdateConfig(r.runningConfig, newConfigData)
+	if isUpdated {
+		r.runningConfig = confData
+	}
+	return isUpdated, nil
 }
 
 // +kubebuilder:rbac:groups="",resources="services",verbs={get,create}
